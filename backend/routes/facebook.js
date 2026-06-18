@@ -116,6 +116,14 @@ router.get("/facebook/callback", async (req, res) => {
       { upsert: true },
     );
 
+    // Subscribe page to webhook events
+    try {
+      const subResult = await facebook.subscribePageToWebhooks(page.id, page.access_token);
+      console.log("[FB] Page subscribed to webhooks:", JSON.stringify(subResult));
+    } catch (err) {
+      console.log("[FB] Page webhook subscription warning (non-fatal):", err.message);
+    }
+
     console.log("[FB] Success! Page connected:", page.name);
     res.redirect(`${process.env.DASHBOARD_URL}?facebook=connected`);
   } catch (err) {
@@ -163,6 +171,22 @@ router.get("/facebook/conversations/:id/messages", authMiddleware, async (req, r
   }
 });
 
+// POST /api/auth/facebook/conversations/:id/reply — send a message in a DM thread
+router.post("/facebook/conversations/:id/reply", authMiddleware, async (req, res) => {
+  try {
+    const account = await FacebookAccount.findOne({ userId: req.userId });
+    if (!account) return res.status(400).json({ error: "No Facebook page connected" });
+    const { message, recipientId } = req.body;
+    if (!message) return res.status(400).json({ error: "Message required" });
+    if (!recipientId) return res.status(400).json({ error: "recipientId required" });
+    const pageToken = decrypt(account.pageAccessToken);
+    const data = await facebook.sendMessageToUser(account.pageId, recipientId, message, pageToken);
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/auth/facebook/feed — get page posts with comments
 router.get("/facebook/feed", authMiddleware, async (req, res) => {
   try {
@@ -186,38 +210,85 @@ router.get("/facebook/feed", authMiddleware, async (req, res) => {
   }
 });
 
-// GET /api/auth/facebook/test-page — simple page info test
-router.get("/facebook/test-page", authMiddleware, async (req, res) => {
+// GET /api/auth/facebook/debug-page — check page IG connection
+router.get("/facebook/debug-page", authMiddleware, async (req, res) => {
+  try {
+    const account = await FacebookAccount.findOne({ userId: req.userId });
+    if (!account) return res.status(400).json({ error: "No Facebook page connected" });
+    const pageToken = decrypt(account.pageAccessToken);
+    const data = await facebook.getPage(account.pageId, pageToken);
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/auth/facebook/debug-ig — comprehensive IG Business Account diagnostic
+router.get("/facebook/debug-ig", authMiddleware, async (req, res) => {
   try {
     const account = await FacebookAccount.findOne({ userId: req.userId });
     if (!account) return res.status(400).json({ error: "No Facebook page connected" });
     const pageToken = decrypt(account.pageAccessToken);
     const results = {};
-    // Test 1: /me with page token
-    try { results.me = await facebook.apiRequest(`/me?fields=id,name&access_token=${pageToken}`); }
-    catch (e) { results.me = e.message; }
-    // Test 2: page info
-    try { results.page = await facebook.getPage(account.pageId, pageToken); }
-    catch (e) { results.page = e.message; }
-    // Test 3: conversations (worked before)
-    try { results.conversations = await facebook.getConversations(account.pageId, pageToken); }
-    catch (e) { results.conversations = e.message; }
-    // Test 4: feed (the failing one)
-    try { results.feed = await facebook.apiRequest(`/${account.pageId}/feed?fields=id,message,created_time&access_token=${pageToken}&limit=3`); }
-    catch (e) { results.feed = e.message; }
-    // Test 5: posts instead of feed
-    try { results.posts = await facebook.apiRequest(`/${account.pageId}/posts?fields=id,message,created_time&access_token=${pageToken}&limit=3`); }
-    catch (e) { results.posts = e.message; }
-    // Test 6: published_posts
-    try { results.published = await facebook.apiRequest(`/${account.pageId}/published_posts?fields=id,message,created_time&access_token=${pageToken}&limit=3`); }
-    catch (e) { results.published = e.message; }
-    // Test 7: feed with comments (exact getPageFeed call)
-    try { results.feedWithComments = await facebook.apiRequest(`/${account.pageId}/feed?fields=id,message,created_time,comments{id,message,from,created_time}&access_token=${pageToken}&limit=3`); }
-    catch (e) { results.feedWithComments = e.message; }
-    // Test 8: posts with comments nested
-    try { results.postsWithComments = await facebook.apiRequest(`/${account.pageId}/posts?fields=id,message,created_time,comments{id,message,from,created_time}&access_token=${pageToken}&limit=3`); }
-    catch (e) { results.postsWithComments = e.message; }
-    res.json({ tokenPrefix: pageToken.substring(0, 10) + "...", results });
+
+    // 1. Token debug info
+    try {
+      results.tokenInfo = await facebook.debugToken(pageToken);
+    } catch (e) { results.tokenInfo = { error: e.message }; }
+
+    // 2. Page with all IG-related fields
+    try {
+      results.pageWithAllFields = await facebook.getPageWithAllFields(account.pageId, pageToken);
+    } catch (e) { results.pageWithAllFields = { error: e.message }; }
+
+    // 3. Page with the original getPage call
+    try {
+      results.pageOriginal = await facebook.getPage(account.pageId, pageToken);
+    } catch (e) { results.pageOriginal = { error: e.message }; }
+
+    // 4. /me/accounts with IG fields
+    try {
+      results.me = await facebook.getMe(pageToken);
+    } catch (e) { results.me = { error: e.message }; }
+
+    // 5. /{pageId}/instagram_accounts edge
+    try {
+      results.instagramAccountsEdge = await facebook.getPageInstagramAccounts(account.pageId, pageToken);
+    } catch (e) { results.instagramAccountsEdge = { error: e.message }; }
+
+    // 6. Check if IG Graph API product is configured by hitting the /{instagram-app-id} endpoint
+    try {
+      const igAppId = "1185667677023983";
+      const igCheck = await facebook.apiRequest(
+        `/${igAppId}?access_token=${pageToken}`
+      );
+      results.igSubAppCheck = igCheck;
+    } catch (e) { results.igSubAppCheck = { error: e.message }; }
+
+    // 7. Try direct Instagram Graph API with sub-app credentials
+    const BASE_IG = "https://graph.facebook.com/v23.0";
+    try {
+      const igUserId = "122219366090564013";
+      const igUrl = `${BASE_IG}/${igUserId}?fields=id,username,account_type,professional_country_code&access_token=${pageToken}`;
+      const parsed = new URL(igUrl);
+      const data = await new Promise((resolve, reject) => {
+        const https = require("https");
+        const req = https.get({
+          hostname: parsed.hostname,
+          path: parsed.pathname + parsed.search,
+        }, (res) => {
+          let body = "";
+          res.on("data", (c) => (body += c));
+          res.on("end", () => {
+            try { resolve(JSON.parse(body)); } catch { resolve({ parseError: body }); }
+          });
+        });
+        req.on("error", reject);
+      });
+      results.igUserIdLookup = data;
+    } catch (e) { results.igUserIdLookup = { error: e.message }; }
+
+    res.json(results);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -276,98 +347,6 @@ router.get("/facebook/posts/:id/comments", authMiddleware, async (req, res) => {
 
 
 
-// POST /api/auth/facebook/comments/:id/raw-reply — raw https test
-router.post("/facebook/comments/:id/raw-reply", authMiddleware, async (req, res) => {
-  try {
-    const account = await FacebookAccount.findOne({ userId: req.userId });
-    if (!account) return res.status(400).json({ error: "No Facebook page connected" });
-    const { message } = req.body;
-    if (!message) return res.status(400).json({ error: "Message required" });
-    const pageToken = decrypt(account.pageAccessToken);
-    const https = require("https");
-    const url = new URL(`https://graph.facebook.com/v23.0/${req.params.id}/replies?access_token=${pageToken}`);
-    const postData = new URLSearchParams({ message }).toString();
-    const options = {
-      hostname: url.hostname,
-      path: url.pathname + url.search,
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded", "Content-Length": Buffer.byteLength(postData) },
-    };
-        console.log("[RAW] POST", options.path.substring(0, 150));
-    console.log("[RAW] body:", postData);
-    console.log("[RAW] commentId:", req.params.id);
-    const result = await new Promise((resolve, reject) => {
-      const r = https.request(options, (resp) => {
-        let data = "";
-        resp.on("data", (c) => (data += c));
-        resp.on("end", () => {
-          console.log("[RAW] response status:", resp.statusCode);
-          console.log("[RAW] response body:", data.substring(0, 500));
-          try { resolve(JSON.parse(data)); } catch { reject(new Error(data)); }
-        });
-      });
-      r.on("error", reject);
-      r.write(postData);
-      r.end();
-    });
-    res.json(result);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// POST /api/auth/facebook/test/comment-on-post — test writing top-level comment
-router.post("/facebook/test/comment-on-post", authMiddleware, async (req, res) => {
-  try {
-    const account = await FacebookAccount.findOne({ userId: req.userId });
-    if (!account) return res.status(400).json({ error: "No Facebook page connected" });
-    const pageToken = decrypt(account.pageAccessToken);
-    const postId = "1114858681719203_122094367497368448";
-    const https = require("https");
-    const url = new URL(`https://graph.facebook.com/v23.0/${postId}/comments?access_token=${pageToken}`);
-    const postData = new URLSearchParams({ message: "Test comment from API" }).toString();
-    const result = await new Promise((resolve, reject) => {
-      const r = https.request({ hostname: url.hostname, path: url.pathname + url.search, method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" } }, (resp) => {
-        let d = "";
-        resp.on("data", c => d += c);
-        resp.on("end", () => { try { resolve(JSON.parse(d)); } catch { reject(new Error(d)); } });
-      });
-      r.on("error", reject);
-      r.write(postData);
-      r.end();
-    });
-    res.json(result);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// GET /api/auth/facebook/comments/:id/raw-get — test raw GET of comment
-router.get("/facebook/comments/:id/raw-get", authMiddleware, async (req, res) => {
-  try {
-    const account = await FacebookAccount.findOne({ userId: req.userId });
-    if (!account) return res.status(400).json({ error: "No Facebook page connected" });
-    const pageToken = decrypt(account.pageAccessToken);
-    const https = require("https");
-    const results = {};
-    // Test full ID
-    const url1 = new URL(`https://graph.facebook.com/v23.0/${req.params.id}?access_token=${pageToken}`);
-    results.fullId = await new Promise((resolve) => {
-      https.get(url1.href, (r) => { let d=""; r.on("data",c=>d+=c); r.on("end",()=>{ try{ resolve(JSON.parse(d)) }catch{ resolve(d) } }); }).on("error", e => resolve(e.message));
-    });
-    // Test numeric part only (after last underscore)
-    const parts = req.params.id.split("_");
-    const numericId = parts[parts.length - 1];
-    const url2 = new URL(`https://graph.facebook.com/v23.0/${numericId}?access_token=${pageToken}`);
-    results.numericId = await new Promise((resolve) => {
-      https.get(url2.href, (r) => { let d=""; r.on("data",c=>d+=c); r.on("end",()=>{ try{ resolve(JSON.parse(d)) }catch{ resolve(d) } }); }).on("error", e => resolve(e.message));
-    });
-    res.json(results);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
 // POST /api/auth/facebook/comments/:id/reply — reply to a comment
 router.post("/facebook/comments/:id/reply", authMiddleware, async (req, res) => {
   try {
@@ -394,6 +373,89 @@ router.delete("/facebook/comments/:id", authMiddleware, async (req, res) => {
     const commentId = req.params.id.split("_").pop();
     await facebook.deleteComment(commentId, pageToken);
     res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/auth/facebook/webhook — Meta webhook verification
+router.get("/facebook/webhook", (req, res) => {
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+  if (mode === "subscribe" && token === process.env.FB_WEBHOOK_VERIFY_TOKEN) {
+    console.log("[FB] Webhook verified");
+    return res.status(200).send(challenge);
+  }
+  res.sendStatus(403);
+});
+
+// POST /api/auth/facebook/webhook — incoming page DMs and comments
+router.post("/facebook/webhook", async (req, res) => {
+  res.sendStatus(200); // always ack immediately
+  try {
+    const body = req.body;
+    if (body.object !== "page") return;
+
+    const { messageQueue } = require("../services/aiPipeline");
+
+    for (const entry of body.entry || []) {
+      const pageId = entry.id;
+      const account = await FacebookAccount.findOne({ pageId });
+      if (!account) continue;
+
+      // Page DMs
+      for (const msg of entry.messaging || []) {
+        if (!msg.message) continue;
+        const senderId = msg.sender?.id;
+        const conversationId = msg.message?.mid || senderId;
+
+        messageQueue.add({
+          platform: "facebook",
+          type: "facebook_dms",
+          conversationId: senderId,
+          userId: account.userId.toString(),
+          username: senderId,
+          extra: { senderId, incomingText: msg.message.text || "" },
+        }).catch((e) => console.error("[FB] Queue error:", e.message));
+      }
+
+      // Page feed changes (comments)
+      for (const change of entry.changes || []) {
+        if (change.field !== "feed") continue;
+        const val = change.value;
+        if (!val || val.item !== "comment" || val.verb !== "add") continue;
+
+        messageQueue.add({
+          platform: "facebook",
+          type: "facebook_comments",
+          conversationId: `comment_${val.post_id}`,
+          userId: account.userId.toString(),
+          username: val.from?.name || val.from?.id || "user",
+          extra: {
+            commentId: val.comment_id,
+            commentText: val.message || "",
+            commentFrom: val.from?.name || val.from?.id || "user",
+            postId: val.post_id,
+            postMessage: val.post?.message || "",
+            incomingText: val.message || "",
+          },
+        }).catch((e) => console.error("[FB] Queue error:", e.message));
+      }
+    }
+  } catch (err) {
+    console.error("[FB] Webhook processing error:", err.message);
+  }
+});
+
+// POST /api/auth/facebook/subscribe-webhooks — re-subscribe page to webhook events
+router.post("/facebook/subscribe-webhooks", authMiddleware, async (req, res) => {
+  try {
+    const account = await FacebookAccount.findOne({ userId: req.userId });
+    if (!account) return res.status(400).json({ error: "No Facebook page connected" });
+    const pageToken = decrypt(account.pageAccessToken);
+    const result = await facebook.subscribePageToWebhooks(account.pageId, pageToken);
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

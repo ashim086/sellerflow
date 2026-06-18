@@ -20,7 +20,14 @@ const STATUS_COLORS = {
 const PLATFORM_STYLES = {
   instagram: { bg: "linear-gradient(135deg, #833ab4, #fd1d1d, #fcb045)", color: "#fff", label: "Instagram" },
   whatsapp: { bg: "#25d366", color: "#fff", label: "WhatsApp" },
+  facebook: { bg: "#1877f2", color: "#fff", label: "Facebook" },
 };
+
+function confidenceColor(score) {
+  if (score >= 0.7) return "#16a34a";
+  if (score >= 0.4) return "#d97706";
+  return "#dc2626";
+}
 
 function timeAgo(dateStr) {
   const diff = Date.now() - new Date(dateStr).getTime();
@@ -92,19 +99,41 @@ export default function LeadCard({ lead, token, onUpdate, onCreateOrder }) {
         style={{ padding: "14px 16px", cursor: "pointer", display: "flex", alignItems: "flex-start", gap: "12px" }}
       >
         {/* Platform badge */}
-        <div
-          style={{
-            background: plat.bg,
-            color: plat.color,
-            borderRadius: "6px",
-            padding: "3px 8px",
-            fontSize: "11px",
-            fontWeight: "700",
-            whiteSpace: "nowrap",
-            flexShrink: 0,
-          }}
-        >
-          {plat.label}
+        <div style={{ display: "flex", flexDirection: "column", gap: "4px", flexShrink: 0 }}>
+          <div
+            style={{
+              background: plat.bg,
+              color: plat.color,
+              borderRadius: "6px",
+              padding: "3px 8px",
+              fontSize: "11px",
+              fontWeight: "700",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {plat.label}
+          </div>
+          {lead.aiExtracted?.processedAt && (
+            <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+              <span style={{
+                background: "#f0f9ff",
+                color: "#0369a1",
+                borderRadius: "5px",
+                padding: "1px 6px",
+                fontSize: "10px",
+                fontWeight: "700",
+                border: "1px solid #bae6fd",
+              }}>AI</span>
+              <span style={{
+                width: "8px",
+                height: "8px",
+                borderRadius: "50%",
+                background: confidenceColor(lead.aiExtracted.confidence || 0),
+                display: "inline-block",
+                flexShrink: 0,
+              }} title={`Confidence: ${Math.round((lead.aiExtracted.confidence || 0) * 100)}%`} />
+            </div>
+          )}
         </div>
 
         <div style={{ flex: 1, minWidth: 0 }}>
@@ -165,6 +194,57 @@ export default function LeadCard({ lead, token, onUpdate, onCreateOrder }) {
                 {lead.profileUrl}
               </a>
             </p>
+          )}
+
+          {/* AI Extraction */}
+          {lead.aiExtracted?.processedAt && (
+            <div style={{
+              background: "#f0f9ff",
+              border: "1px solid #bae6fd",
+              borderRadius: "8px",
+              padding: "10px 12px",
+              marginBottom: "14px",
+              fontSize: "12px",
+            }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+                <span style={{ fontWeight: "700", color: "#0369a1" }}>AI Extracted</span>
+                <span style={{ color: confidenceColor(lead.aiExtracted.confidence || 0), fontWeight: "600" }}>
+                  {Math.round((lead.aiExtracted.confidence || 0) * 100)}% confidence
+                </span>
+              </div>
+              {lead.aiExtracted.customerName && (
+                <div style={{ marginBottom: "4px" }}>
+                  <span style={{ color: "#555", fontWeight: "600" }}>Name: </span>
+                  <span style={{ color: "#222" }}>{lead.aiExtracted.customerName}</span>
+                </div>
+              )}
+              {lead.aiExtracted.products?.length > 0 && (
+                <div style={{ marginBottom: "4px" }}>
+                  <span style={{ color: "#555", fontWeight: "600" }}>Products: </span>
+                  <span style={{ color: "#222" }}>
+                    {lead.aiExtracted.products.map(p => `${p.name}${p.qty ? ` ×${p.qty}` : ""}`).join(", ")}
+                  </span>
+                </div>
+              )}
+              {lead.aiExtracted.deliveryAddress && (
+                <div style={{ marginBottom: "4px" }}>
+                  <span style={{ color: "#555", fontWeight: "600" }}>Address: </span>
+                  <span style={{ color: "#222" }}>{lead.aiExtracted.deliveryAddress}</span>
+                </div>
+              )}
+              {lead.aiExtracted.preferredTime && (
+                <div style={{ marginBottom: "4px" }}>
+                  <span style={{ color: "#555", fontWeight: "600" }}>Time: </span>
+                  <span style={{ color: "#222" }}>{lead.aiExtracted.preferredTime}</span>
+                </div>
+              )}
+              {lead.aiExtracted.notes && (
+                <div>
+                  <span style={{ color: "#555", fontWeight: "600" }}>Notes: </span>
+                  <span style={{ color: "#222" }}>{lead.aiExtracted.notes}</span>
+                </div>
+              )}
+            </div>
           )}
 
           {/* Status selector */}

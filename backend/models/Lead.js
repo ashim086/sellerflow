@@ -3,7 +3,7 @@ const mongoose = require("mongoose");
 const leadSchema = new mongoose.Schema(
   {
     userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
-    platform: { type: String, enum: ["instagram", "whatsapp"], required: true },
+    platform: { type: String, enum: ["instagram", "whatsapp", "facebook"], required: true },
     username: { type: String, required: true, trim: true },
     lastMessage: { type: String, default: "" },
     profileUrl: { type: String, default: null },
@@ -14,6 +14,17 @@ const leadSchema = new mongoose.Schema(
     },
     notes: [{ type: String }],
     savedAt: { type: Date, default: Date.now },
+    externalConversationId: { type: String, default: null, index: true },
+    aiExtracted: {
+      customerName: { type: String, default: null },
+      products: [{ name: String, qty: Number }],
+      deliveryAddress: { type: String, default: null },
+      preferredTime: { type: String, default: null },
+      notes: { type: String, default: null },
+      confidence: { type: Number, default: 0 },
+      autoReplied: { type: Boolean, default: false },
+      processedAt: { type: Date, default: null },
+    },
   },
   { timestamps: { createdAt: "savedAt", updatedAt: "updatedAt" } }
 );

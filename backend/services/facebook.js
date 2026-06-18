@@ -12,17 +12,10 @@ function apiRequest(path, method = "GET", bodyData = null) {
       method,
     };
 
-    if (method === "POST") {
-      console.log("[API] POST", options.path.substring(0, 120) + "...");
-    }
-
     const req = https.request(options, (res) => {
       let body = "";
       res.on("data", (chunk) => (body += chunk));
       res.on("end", () => {
-        if (method === "POST") {
-          console.log("[API] POST response:", body.substring(0, 300));
-        }
         try {
           const data = JSON.parse(body);
           if (data.error) reject(new Error(data.error.message));
@@ -67,10 +60,6 @@ function getLongLivedToken(userAccessToken) {
   return apiRequest(`/oauth/access_token?${params.toString()}`);
 }
 
-function getPageInsights(pageId, pageAccessToken) {
-  return apiRequest(`/${pageId}/insights?metric=page_impressions,page_engaged_users&access_token=${pageAccessToken}`);
-}
-
 function getConversations(pageId, pageAccessToken) {
   return apiRequest(`/${pageId}/conversations?fields=id,updated_time,message_count,senders{id,name}&access_token=${pageAccessToken}&limit=50`);
 }
@@ -84,7 +73,7 @@ function getPageAccessToken(pageId, userAccessToken) {
 }
 
 function getPage(pageId, pageAccessToken) {
-  return apiRequest(`/${pageId}?fields=id,name&access_token=${pageAccessToken}`);
+  return apiRequest(`/${pageId}?fields=id,name,instagram_business_account{id,username}&access_token=${pageAccessToken}`);
 }
 
 function getPageFeed(pageId, pageAccessToken) {
@@ -106,6 +95,48 @@ function replyToComment(commentId, message, pageAccessToken) {
   return apiRequest(`/${commentId}/comments?access_token=${pageAccessToken}`, "POST", { message });
 }
 
+function replyToConversation(conversationId, message, pageAccessToken) {
+  return apiRequest(`/${conversationId}/messages?access_token=${pageAccessToken}`, "POST", { message });
+}
+
+function sendMessageToUser(pageId, recipientId, message, pageAccessToken) {
+  const bodyJson = JSON.stringify({
+    recipient: { id: recipientId },
+    messaging_type: "RESPONSE",
+    message: { text: message },
+  });
+  return new Promise((resolve, reject) => {
+    const url = new URL(`https://graph.facebook.com/v23.0/${pageId}/messages?access_token=${pageAccessToken}`);
+    const options = {
+      hostname: url.hostname,
+      path: url.pathname + url.search,
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(bodyJson) },
+    };
+    const req = https.request(options, (res) => {
+      let data = "";
+      res.on("data", (c) => (data += c));
+      res.on("end", () => {
+        try {
+          const parsed = JSON.parse(data);
+          if (parsed.error) reject(new Error(parsed.error.message));
+          else resolve(parsed);
+        } catch { reject(new Error("Failed to parse response")); }
+      });
+    });
+    req.on("error", reject);
+    req.write(bodyJson);
+    req.end();
+  });
+}
+
+function subscribePageToWebhooks(pageId, pageAccessToken) {
+  return apiRequest(
+    `/${pageId}/subscribed_apps?subscribed_fields=messages,messaging_postbacks,feed&access_token=${pageAccessToken}`,
+    "POST"
+  );
+}
+
 function deleteComment(commentId, pageAccessToken) {
   return apiRequest(`/${commentId}?access_token=${pageAccessToken}`, "DELETE");
 }
@@ -114,12 +145,25 @@ function debugToken(accessToken) {
   return apiRequest(`/debug_token?input_token=${accessToken}&access_token=${process.env.META_APP_ID}|${process.env.META_APP_SECRET}`);
 }
 
+function getMe(accessToken) {
+  return apiRequest(`/me?fields=id,name,accounts{id,name,instagram_business_account{id,username}},instagram_basic_id&access_token=${accessToken}`);
+}
+
+function getPageInstagramAccounts(pageId, pageAccessToken) {
+  return apiRequest(`/${pageId}/instagram_accounts?access_token=${pageAccessToken}`);
+}
+
+function getPageWithAllFields(pageId, pageAccessToken) {
+  return apiRequest(
+    `/${pageId}?fields=id,name,instagram_business_account{id,username,profile_picture_url},connected_instagram_account,instagram_accounts{id,username}&access_token=${pageAccessToken}`
+  );
+}
+
 module.exports = {
   apiRequest,
   exchangeCodeForToken,
   getUserPages,
   getLongLivedToken,
-  getPageInsights,
   getConversations,
   getConversationMessages,
   getPageFeed,
@@ -128,6 +172,12 @@ module.exports = {
   getPostComments,
   cleanCommentIds,
   replyToComment,
+  replyToConversation,
+  sendMessageToUser,
   deleteComment,
+  subscribePageToWebhooks,
   debugToken,
+  getMe,
+  getPageInstagramAccounts,
+  getPageWithAllFields,
 };
